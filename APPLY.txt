@@ -1,0 +1,10 @@
+AMANZINE (saharshop2026) — كل تغييرات الجلسة (19 commits)
+==========================================================
+Backend كامل + واجهات:
+  /explore  — بحث موحّد + فلاتر + رائج + قد يعجبك + قائمة/خريطة
+  /feed     — نشاط الأعمال (trending/local/following)
+  /business/:s/:id — صفحة نشاط ديناميكية (+ ذات صلة + آخر النشاط)
+  الخريطة   — Leaflet + OSM (مضمّنة، lazy، بلا CDN، آمنة CSP)
+
+ملاحظة تثبيت: leaflet@1.9.4 أُضيف. بعد git am:
+  npm i --legacy-peer-deps && npx tsc --noEmit && npm run build && (cd server && npm test)
