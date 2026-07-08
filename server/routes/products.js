@@ -1,0 +1,84 @@
+'use strict';
+const { validateProduct, sanitizeBody } = require('../middleware/validate');
+const router = require('express').Router();
+const auth   = require('../middleware/auth');
+const { db } = require('../database');
+
+router.get('/', auth, async (req, res) => {
+  try { res.json(await db.getProducts(req.user.id)); }
+  catch (e) { console.error('[products]', e.message); res.status(500).json({ error: 'Server error' }); }
+});
+
+router.post('/', auth, sanitizeBody, validateProduct, async (req, res) => {
+  try {
+    const { name, price } = req.body;
+    if (!name || price == null) return res.status(400).json({ error: 'Name and price are required' });
+    const settings = await db.getSettings(req.user.id) || {};
+    const count    = (await db.getProducts(req.user.id)).length;
+    const sku      = settings.products?.autoSku
+      ? `${settings.products.skuPrefix || 'PRD'}-${String(count + 1).padStart(3,'0')}`
+      : req.body.sku || '';
+    const product = await db.createProduct({ ...req.body, sku, userId: req.user.id, price: +req.body.price, cost: +(req.body.cost || 0), stock: +(req.body.stock || 0) });
+    await db.addLog({ userId: req.user.id, user: 'Manager', action: `Added product: ${name}`, details: `${product.price} ${settings.brand?.currency || 'MAD'}`, type: 'product', severity: 'success' });
+    await db.addNotification({ userId: req.user.id, type: 'success', message: `✅ تمت إضافة المنتج: ${name}` });
+    req.app.get('broadcast')?.(req.user.id, { event: 'product_added', data: product });
+    res.status(201).json(product);
+  } catch (e) { console.error('[products]', e.message); res.status(500).json({ error: 'Server error' }); }
+});
+
+router.get('/:id', auth, async (req, res) => {
+  try {
+    const p = await db.getProduct(req.params.id);
+    if (!p || p.userId !== req.user.id) return res.status(404).json({ error: 'Not found' });
+    res.json(p);
+  } catch (e) { res.status(500).json({ error: 'Server error' }); }
+});
+
+router.put('/:id', auth, async (req, res) => {
+  try {
+    const p = await db.getProduct(req.params.id);
+    if (!p || p.userId !== req.user.id) return res.status(404).json({ error: 'Not found' });
+    const updated = await db.updateProduct(req.params.id, req.body);
+    req.app.get('broadcast')?.(req.user.id, { event: 'product_updated', data: updated });
+    res.json(updated);
+  } catch (e) { console.error('[products]', e.message); res.status(500).json({ error: 'Server error' }); }
+});
+
+router.delete('/:id', auth, async (req, res) => {
+  try {
+    const p = await db.getProduct(req.params.id);
+    if (!p || p.userId !== req.user.id) return res.status(404).json({ error: 'Not found' });
+    await db.deleteProduct(req.params.id, req.user.id);
+    await db.addLog({ userId: req.user.id, user: 'Manager', action: `Deleted product: ${p.name}`, details: '', type: 'product', severity: 'warning' });
+    req.app.get('broadcast')?.(req.user.id, { event: 'product_deleted', data: { id: req.params.id } });
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: 'Server error' }); }
+});
+
+// Public catalog (no auth)
+router.get('/public/catalog', async (req, res) => {
+  try {
+    const { userId } = req.query;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    const products = (await db.getProducts(userId)).filter(p => p.status === 'published' && (p.type === 'service' || p.type === 'digital' || p.stock > 0));
+    const settings = await db.getSettings(userId) || {};
+    const deliveryCosts = settings.deliveryCosts || {};
+    // إعدادات العروض الذكية بقيم آمنة محصورة (نفس الحدود المطبقة في مسار الطلب)
+    const p = settings.promotions || {};
+    const promotions = {
+      freeShippingThreshold: +p.freeShippingThreshold > 0 ? +p.freeShippingThreshold : 400,
+      bundle: {
+        enabled: p.bundle?.enabled !== false,
+        minItems: Math.max(2, +p.bundle?.minItems || 3),
+        percent: Math.min(Math.max(+p.bundle?.percent || 10, 0), 25),
+      },
+      wheel: {
+        enabled: p.wheel?.enabled !== false,
+        minOrder: Math.max(+p.wheel?.minOrder || 150, 0),
+      },
+    };
+    res.json({ products, brand: settings.brand || {}, deliveryCosts, promotions, hcaptchaSiteKey: settings.security?.hcaptchaSiteKey || '' });
+  } catch (e) { res.status(500).json({ error: 'Server error' }); }
+});
+
+module.exports = router;
